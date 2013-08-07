@@ -169,6 +169,30 @@ class GoodReadsClient
 end
 
 
+
+
+class FreeBaseClient
+  def self.get_nationality(author_name)
+    #puts author_name
+    base_path = 'https://www.googleapis.com/freebase/v1/mqlread/?query='
+    query = %Q{[{ "name~=": "#{author_name}", "type": "/book/author", "/people/person/nationality":[{}] }]}
+    uri = URI(base_path + CGI.escape(query))
+    response = Net::HTTP.start(uri.host, use_ssl: true) do |http|
+       http.get uri.request_uri
+    end
+    json = JSON.parse(response.body.to_s)
+    sleep 0.3
+    if json["result"] && !json["result"].empty?
+      nationalities = json["result"][0]["/people/person/nationality"]
+      index = nationalities.size == 1 ? 0 : 1
+      if !nationalities.empty?
+        return nationalities[index]['name']
+      end
+    end
+    "Unknown"
+  end
+end
+
 authors = GoodReadsExport.get_authors
 unique_authors = authors.uniq
 puts "Total books #{authors.size}"
@@ -178,14 +202,13 @@ known_authors = KnownAuthors.new
 
 unknown_authors = known_authors.filter(unique_authors)
 
+#goodreads = GoodReadsClient.new
 
-goodreads = GoodReadsClient.new
-
-unknown_authors.each do |original_author_name|
-  nationality = goodreads.get_nationality(original_author_name)
-
-  puts "#{original_author_name}  -> #{birth_place}"
-  known_authors.add(original_author_name, nationality)
+unknown_authors.each do |author_name|
+#  nationality = goodreads.get_nationality(original_author_name)
+ nationality = FreeBaseClient.get_nationality(author_name)
+  puts "#{author_name}  -> #{nationality}"
+  known_authors.add(author_name, nationality)
   known_authors.save
 end
 
