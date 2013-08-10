@@ -209,24 +209,16 @@ class FreeBaseClient
 
 end
 
-
 authors = GoodReadsData.import
-authors.print_totals
 
 known_authors = KnownAuthors.new
-
 unknown_authors = authors.filter(known_authors.list)
 
-#unknown_authors = known_authors.filter(authors)
-known_authors.list.printout
-raise 'end'
-#goodreads = GoodReadsClient.new
-
 unknown_authors.each do |author|
-#  nationality = goodreads.get_nationality(original_author_name)
   author.nationality = FreeBaseClient.get_nationality(author.name)
   puts "#{author.name}  -> #{author.nationality}"
   known_authors.add(author)
   known_authors.save
 end
 
+known_authors.list.printout
