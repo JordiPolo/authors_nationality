@@ -38,13 +38,17 @@ class AuthorList
 
   def printout
     puts 'Authors:'
-    @list.each do |author|
-      puts "#{author.name} -> #{author.nationality}, #{author.book_count}"
-    end
+    print_names
     puts 'By country:'
     puts by_country
     puts 'Summary:'
     puts print_stats
+  end
+
+  def print_names
+    @list.each do |author|
+      puts "#{author.name} -> #{author.nationality}, #{author.book_count}"
+    end
   end
 
   def print_stats
@@ -159,7 +163,7 @@ end
 # This class manages a cache file with all the results we had till now. This let us print what
 # we want or search for new authors without needing to search for all the previous authors
 class KnownAuthors
-  attr_reader :list
+  attr_reader :list, :unknown_list
 
   def initialize
     contents = if File.exists?(BIRTHPLACE_FILE)
@@ -167,10 +171,7 @@ class KnownAuthors
     else
       "[]"
     end
-    authors = JSON.parse(contents)
-    @list = authors.inject(AuthorList.new){|list, author| list.add(Author.new(author))}
-  rescue
-    @list = AuthorList.new
+    create_lists(contents)
   end
 
   def add(author)
@@ -183,14 +184,48 @@ class KnownAuthors
     end
   end
 
+  def create_lists(contents)
+    authors = JSON.parse(contents)
+    @unknown_list = AuthorList.new
+    @list = authors.inject(AuthorList.new) do |list, author|
+      if author['nationality'] != 'Unknown'
+        list.add(Author.new(author))
+      else
+        @unknown_list.add(Author.new(author))
+      end
+      list
+    end
+  rescue
+    @list = AuthorList.new
+    @unknown_list = AuthorList.new
+  end
 end
 
 
 class FreeBaseClient
   def self.get_nationality(author_name)
+    return 'Unknown' if author_name == 'Anonymous'
+    self.queries(author_name).each do |query|
+      result = self.execute_query(query)
+      return result if result != 'Unknown'
+    end
+    'Unknown'
+  end
+
+  private
+
+  def self.queries(author_name)
+    question = '"/people/person/nationality":[{}]'
+    queries = {
+      writer: %Q{[{ "name~=": "#{author_name}", "type": "/book/author", #{question} }]},
+      mangaka: %Q{[{ "name~=": "#{author_name}", "/people/person/profession": "Mangaka", #{question} }]},
+      general: %Q{[{ "/common/topic/alias~=": "#{author_name}", #{question} }]}
+    }.values
+  end
+
+  def self.execute_query(query)
     #puts author_name
     base_path = 'https://www.googleapis.com/freebase/v1/mqlread/?query='
-    query = %Q{[{ "name~=": "#{author_name}", "type": "/book/author", "/people/person/nationality":[{}] }]}
     uri = URI(base_path + CGI.escape(query))
     response = Net::HTTP.start(uri.host, use_ssl: true) do |http|
        http.get uri.request_uri
@@ -212,6 +247,7 @@ end
 authors = GoodReadsData.import
 
 known_authors = KnownAuthors.new
+
 unknown_authors = authors.filter(known_authors.list)
 
 unknown_authors.each do |author|
@@ -221,4 +257,6 @@ unknown_authors.each do |author|
   known_authors.save
 end
 
-known_authors.list.printout
+puts 'still unknown'
+known_authors.unknown_list.print_names
+
