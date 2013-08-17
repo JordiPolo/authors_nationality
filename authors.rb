@@ -77,7 +77,6 @@ private
   def count_books_by_country
     country_data = by_country
     country_data.each_pair{|country, authors| country_data[country] = authors.map(&:book_count).inject(0,:+)}
- #   by_country.map{|country, authors| {country => }
   end
 
   def print_sorted(data)
@@ -224,22 +223,26 @@ class FreeBaseClient
   end
 
   def self.execute_query(query)
-    #puts author_name
     base_path = 'https://www.googleapis.com/freebase/v1/mqlread/?query='
     uri = URI(base_path + CGI.escape(query))
-    response = Net::HTTP.start(uri.host, use_ssl: true) do |http|
-       http.get uri.request_uri
-    end
-    json = JSON.parse(response.body.to_s)
-    sleep 0.2
-    if json["result"] && !json["result"].empty?
-      nationalities = json["result"][0]["/people/person/nationality"]
+    result = get_result_from_uri(uri)
+
+    if result && !result.empty?
+      nationalities = result[0]["/people/person/nationality"]
       index = nationalities.size == 1 ? 0 : 1
       if !nationalities.empty?
         return nationalities[index]['name']
       end
     end
     "Unknown"
+  end
+
+  def self.get_result_from_uri(uri)
+    response = Net::HTTP.start(uri.host, use_ssl: true) do |http|
+       http.get uri.request_uri
+    end
+    json = JSON.parse(response.body.to_s)
+    json['result']
   end
 
 end
@@ -257,6 +260,6 @@ unknown_authors.each do |author|
   known_authors.save
 end
 
-puts 'still unknown'
-known_authors.unknown_list.print_names
 
+puts '#####'
+known_authors.list.print_stats
