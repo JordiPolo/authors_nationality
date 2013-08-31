@@ -7,8 +7,11 @@ require 'json'
 
 BOOKS_FILE = 'goodreads_export.csv'
 BIRTHPLACE_FILE = 'known_authors.json'
+FREEBASE_KEY = ENV['GOOGLE_API_KEY'] || raise 'Please provide a Google api key in GOOGLE_API_KEY var'
+
 
 class AuthorList
+  attr_reader :list
   def initialize(data_array = [])
     @list = data_array.map{|author| Author.new(author)}
   end
@@ -33,7 +36,14 @@ class AuthorList
 
   def filter(known_authors)
     return authors unless known_authors
-    @list.select{|author| !known_authors.names.include?(author.name)}
+    @list.select do |author|
+      known_author = known_authors.list.find{|a| a.name == author.name}
+      if known_author && known_author.books == author.books
+        false
+      else
+        true
+      end
+    end
   end
 
   def printout
@@ -95,18 +105,23 @@ private
   end
 end
 
+
+
 class Author
   attr_accessor :name, :books, :nationality
+
   def initialize(properties)
     raise 'the author needs a name' unless properties['name']
     @name = properties['name']
-    @books = properties['books'] || []
+    @books = Array(properties['books'])
     @nationality = properties['nationality']
   end
+
   def merge(new_author)
-    @books.push(new_author.books).flatten
+    @books.push(new_author.books).flatten!
     @nationality ||= new_author.nationality
   end
+
   def book_count
     @books.size
   end
@@ -119,14 +134,22 @@ class Author
     case @nationality
     when 'United States of America'
       'US'
+    when 'Confederate States of America'
+      'US'
     when 'United Kingdom'
       'England'
     when 'Scotland'
       'England'
     when 'Wales'
       'England'
+    when 'Kingdom of Great Britain'
+      'England'
     when 'Kingdom of Prussia'
       'Germany'
+    when 'Russian Empire'
+      'Russia'
+    when 'Kingdom of Ireland'
+      'Ireland'
     else
       @nationality
     end
@@ -142,21 +165,42 @@ class GoodReadsData
     contents = File.read(BOOKS_FILE)
 
     all_books = contents.split("\n")
-    books = all_books.delete_if{|book_info| book_info.include?('to-read')}
+    book_data = all_books.delete_if{|book_info| book_info.include?('to-read')}
     # get rid of the headers
-    books.shift
+    book_data.shift
 
+    books = self.read_book_data(book_data)
 
     books.inject(AuthorList.new) do |list, book|
+      list.add(Author.new('name' => book[:author], 'books' => [book[:title]]))
+      list
+    end
+  end
+
+
+  private
+
+  def self.read_book_data(book_data)
+    book_data.inject([]) do |list, book|
       # split by "  because every field text is surrounded by quotes, it is better than commas
       # because we are having commas everywhere
       author = book.split("\"")[3]
       book_title = book.split("\"")[1]
-      list.add(Author.new('name' => author, 'books' => [book_title]))
-      list
+      book_type = self.book_type(book)
+      list.push({author: author, title: book_title, type: book_type})
+    end
+  end
+
+  def self.book_type(book_data)
+    if book_data.include?('manga')
+      'manga'
+    else
+      'book'
     end
   end
 end
+
+
 
 
 # This class manages a cache file with all the results we had till now. This let us print what
@@ -164,13 +208,9 @@ end
 class KnownAuthors
   attr_reader :list, :unknown_list
 
-  def initialize
-    contents = if File.exists?(BIRTHPLACE_FILE)
-      File.read(BIRTHPLACE_FILE)
-    else
-      "[]"
-    end
-    create_lists(contents)
+  def initialize(filename = BIRTHPLACE_FILE)
+    @filename = filename
+    create_lists(read_json(read_file_contents(filename)))
   end
 
   def add(author)
@@ -178,41 +218,58 @@ class KnownAuthors
   end
 
   def save
-    File.open(BIRTHPLACE_FILE,"w") do |f|
+    File.open(@filename,"w") do |f|
       f.write(@list.serialize)
     end
   end
 
-  def create_lists(contents)
-    authors = JSON.parse(contents)
-    @unknown_list = AuthorList.new
-    @list = authors.inject(AuthorList.new) do |list, author|
-      if author['nationality'] != 'Unknown'
-        list.add(Author.new(author))
-      else
-        @unknown_list.add(Author.new(author))
-      end
-      list
+  private
+  def create_lists(authors_raw_list)
+    unknown, known = authors_raw_list.partition{|author| author['nationality'] == 'Unknown'}
+    @unknown_list = AuthorList.new(unknown)
+    @list = AuthorList.new(known)
+  end
+
+  def read_json(contents)
+    JSON.parse(contents)
+  rescue JSON::ParserError
+    []
+  end
+
+  def read_file_contents(filename)
+    if File.exists?(filename)
+      File.read(filename)
+    else
+      "[]"
     end
-  rescue
-    @list = AuthorList.new
-    @unknown_list = AuthorList.new
+  end
+end
+
+
+class NationalityCalculator
+  def self.get_nationality(author_name)
+    return 'Unknown' if self.unknown_author?(author_name)
+    FreeBaseClient.get_nationality(author_name)
+  end
+
+  private
+  def self.unknown_author?(author_name)
+    ['Anonymous', 'Various', 'Unknown'].include?(author_name)
   end
 end
 
 
 class FreeBaseClient
   def self.get_nationality(author_name)
-    return 'Unknown' if author_name == 'Anonymous'
-    self.queries(author_name).each do |query|
-      result = self.execute_query(query)
-      return result if result != 'Unknown'
+    self.queries(author_name).inject('Unknown') do |nationality, query|
+      if nationality == 'Unknown'
+        nationality = self.execute_query(query)
+      end
+      nationality
     end
-    'Unknown'
   end
 
   private
-
   def self.queries(author_name)
     question = '"/people/person/nationality":[{}]'
     queries = {
@@ -223,12 +280,13 @@ class FreeBaseClient
   end
 
   def self.execute_query(query)
-    base_path = 'https://www.googleapis.com/freebase/v1/mqlread/?query='
+    base_path = "https://www.googleapis.com/freebase/v1/mqlread/?key=#{FREEBASE_KEY}&query="
     uri = URI(base_path + CGI.escape(query))
     result = get_result_from_uri(uri)
-
-    if result && !result.empty?
+    if !result.empty?
       nationalities = result[0]["/people/person/nationality"]
+      # Taking the second nationality because usually the author was born somewhere
+      # but soon moved on
       index = nationalities.size == 1 ? 0 : 1
       if !nationalities.empty?
         return nationalities[index]['name']
@@ -242,10 +300,13 @@ class FreeBaseClient
        http.get uri.request_uri
     end
     json = JSON.parse(response.body.to_s)
-    json['result']
+    Array(json['result'])
   end
 
 end
+
+
+
 
 authors = GoodReadsData.import
 
@@ -254,7 +315,7 @@ known_authors = KnownAuthors.new
 unknown_authors = authors.filter(known_authors.list)
 
 unknown_authors.each do |author|
-  author.nationality = FreeBaseClient.get_nationality(author.name)
+  author.nationality = NationalityCalculator.get_nationality(author.name)
   puts "#{author.name}  -> #{author.nationality}"
   known_authors.add(author)
   known_authors.save
